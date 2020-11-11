@@ -13,11 +13,23 @@
 //#define MY_RADIO_RFM69
 //#define MY_RADIO_RFM95
 
+//#define MY_SIGNING_SOFT
+//#define MY_SIGNING_SOFT_RANDOMSEED_PIN A6
+//#define MY_SIGNING_REQUEST_SIGNATURES
+
 #define MY_SPECIAL_DEBUG
+
+//#define RP_DEBUG
+#define RP_SLEEP_MODE
 
 #include <MySensors.h>
 #include <myRPlibs.h>
+
+#include <myRPcontact.h>
 #include <myRPbattery.h>
+#include <myRPAVRtemp.h>
+#include <myRPsignal.h>
+#include <myRPpulsecounter.h>
 
 #define DOOR_SENSOR_PIN		2 
 #define PULSE_SENSOR		3                  // The digital input you attached your sensor.  (Only 2 and 3 generates interrupt!)
@@ -29,17 +41,17 @@
 #define MAX_FLOW 40                             // Max flow (l/min) value to report. This filters outliers.
 
 #define CHILD_ID		102                             // Id of the sensor child
-#define RP_ID_DOOR		80                              // Id of the alarm
+//#define RP_ID_DOOR		80                              // Id of the alarm
 
-#define NODE_VER		F("1.04-3V" STR(MY_RF24_PA_LEVEL)"8")
+#define NODE_VER		F("1.3-3V" STR(MY_RF24_PA_LEVEL)"8")
 
 uint32_t SEND_FREQUENCY =
-    60000;           // Minimum time between send (in milliseconds). We don't want to spam the gateway.
-
+    60000UL*5UL;           // Minimum time between send (in milliseconds). We don't want to spam the gateway.
+/*
 MyMessage flowMsg(CHILD_ID,V_FLOW);
 MyMessage volumeMsg(CHILD_ID,V_VOLUME);
 MyMessage lastCounterMsg(CHILD_ID,V_VAR3);
-MyMessage doorMsg(RP_ID_DOOR,V_TRIPPED);
+
 
 
 double ppl = ((double)PULSE_FACTOR)/1000;        // Pulses per liter
@@ -59,37 +71,38 @@ uint32_t lastSend =0;
 uint32_t lastPulse =0;
 bool wasReport;
 byte doorStatus = 0;
-byte pulseStatus = 0;
-static uint32_t rp_last_force_time = 0;
+byte pulseStatus = 0;*/
+
+//RpBattery rpbattery(A7, INTERNAL, 110);
+//RpContact contact(DOOR_SENSOR_PIN);
+//RpContact contact2(4);
+//Rpavrtemp avrtemp();
+		
 
 void before() {
-  // initialize our digital pins internal pullup resistor so one pulse switches from high to low (less distortion)
-    pinMode(PULSE_SENSOR, INPUT_PULLUP);
-	pinMode(DOOR_SENSOR_PIN, INPUT_PULLUP);
-
 	//attachInterrupt(digitalPinToInterrupt(PULSE_SENSOR), onPulse, CHANGE);
 	//attachInterrupt(digitalPinToInterrupt(DOOR_SENSOR_PIN), onOpen, CHANGE);
 
-	lastSend = lastPulse = rp_now;
-   pulseCount = oldPulseCount = 0;
+//	lastSend = lastPulse = rp_now;
+ //  pulseCount = oldPulseCount = 0;
+   new RpAVRtemp();
+   new RpSignal();
+   new RpContact(DOOR_SENSOR_PIN);
 
    /*(new RpBattery(A7, DEFAULT, 500))
 		->setBattery(240,500)
 		->setDivider(0,1);*/
    (new RpBattery(A7, INTERNAL, 110))
-		->setBattery(240,300);
-   
+		->setBattery(220,290);
+
+   new myRpPulseCounter(PULSE_SENSOR);
+
+
    rp_before();
 }
 
 void setup()
 {
-    // Fetch last known pulse count value from gw
-    request(CHILD_ID, V_VAR3);
-	doorStatus = hwDigitalRead(DOOR_SENSOR_PIN);
-    myresend(doorMsg.set(doorStatus));
-	pulseStatus = hwDigitalRead(PULSE_SENSOR);
-
 	rp_setup();
 }
 
@@ -98,119 +111,35 @@ void presentation()
     // Send the sketch version information to the gateway and Controller
     sendSketchInfo(F("Gas Meter"), NODE_VER);
 
-    // Register this device as Gas flow sensor
-    present(CHILD_ID, S_GAS, F("Gas Counter"));
-
-	present(RP_ID_DOOR, S_DOOR, F("Gas Door"));  
-
-	present(RP_ID_SIGNAL, S_SOUND);
-
-	present(RP_ID_TEMP, S_TEMP);
-
 	rp_presentation();
 }
 
 void loop()
 {
-	if (!pcReceived)  {
-		wait(2000);
-
-		if (!pcReceived) {
-			//Last Pulsecount not yet received from controller, request it again
-			request(CHILD_ID, V_VAR3);  
-			return;
-		}			
-	}
-
 	rp_loop();
 
-	if(rp_first_loop) {
-		reportHwTemp();
-	}
+	/*if(!rp_requreReinit) {
 
-	uint32_t currentTime = rp_now;
-	
-    // Only send values at a maximum frequency or woken up from sleep
-    if (SLEEP_MODE || (currentTime - lastSend > SEND_FREQUENCY)) {
-        
-        if (!SLEEP_MODE && flow != oldflow) {
-            oldflow = flow;
-#if RP_DEBUG
-            Serial.print(F("m3/min:"));
-            Serial.println(flow);
-#endif
-            // Check that we don't get unreasonable large flow value.
-            // could happen when long wraps or false interrupt triggered
-            if (flow<((uint32_t)MAX_FLOW)) {
-                myresend(flowMsg.set(flow, 2));                   // Send flow value to gw
-				//wasReport = true;
-            }
-        }
+		(void)_sendRoute(build(_msg, GATEWAY_ADDRESS, NODE_SENSOR_ID, C_INTERNAL,
+			I_POST_SLEEP_NOTIFICATION).set(SEND_FREQUENCY));
 
-        // No Pulse count received in 2min
-		if(!SLEEP_MODE) {
-			if(currentTime - lastPulse > 120000) {
-				flow = 0;
-			}
-		}
-
-        // Pulse count has changed
-        if ((pulseCount != oldPulseCount)||(!SLEEP_MODE)) {
-            oldPulseCount = pulseCount;
-			//wasReport = true;
-#ifdef RP_DEBUG
-            Serial.print(F("pulsecount:"));
-            Serial.println(pulseCount);
-#endif
-            byte ok = myresend(lastCounterMsg.set(pulseCount/2));                  // Send  pulsecount value to gw in VAR3
-
-            if(ok) {
-              gwPulseCount = pulseCount;
-            }
-
-            double volume = ((double)(pulseCount/2)/((double)PULSE_FACTOR));
-            if ((volume != oldvolume)||(!SLEEP_MODE)) {
-                oldvolume = volume;
-#ifdef RP_DEBUG
-                Serial.print(F("volume:"));
-                Serial.println(volume, 3);
-#endif
-                myresend(volumeMsg.set(volume, 2));               // Send volume value to gw
-            }            
-        }
-
-		if(((rp_now - rp_last_force_time) > rp_force_time*1000UL*60) || wasReport) {
-
-			rp_signalReport();
-			reportHwTemp();
-
-			rp_last_force_time = rp_now;
-			//wasReport = true;
-		//}
-		//if(wasReport && SLEEP_MODE) {
-			(void)_sendRoute(build(_msg, GATEWAY_ADDRESS, NODE_SENSOR_ID, C_INTERNAL,
-				I_POST_SLEEP_NOTIFICATION).set(SEND_FREQUENCY));
-
-			(void)_sendRoute(build(_msg, GATEWAY_ADDRESS, NODE_SENSOR_ID, C_INTERNAL,
-				I_PRE_SLEEP_NOTIFICATION).set((uint32_t)MY_SMART_SLEEP_WAIT_DURATION_MS));
+		(void)_sendRoute(build(_msg, GATEWAY_ADDRESS, NODE_SENSOR_ID, C_INTERNAL,
+			I_PRE_SLEEP_NOTIFICATION).set((uint32_t)MY_SMART_SLEEP_WAIT_DURATION_MS));
 			
-			wait(MY_SMART_SLEEP_WAIT_DURATION_MS);
-			//lastSend = currentTime;			
-		}
-
-		wasReport = false;		
-    }
-
-	checkPulse();
-	checkDoor();
+		wait(MY_SMART_SLEEP_WAIT_DURATION_MS);
+	}*/
+	//Serial.println(rp_now);
     if (SLEEP_MODE) {
-		sleep(digitalPinToInterrupt(DOOR_SENSOR_PIN), CHANGE, digitalPinToInterrupt(PULSE_SENSOR), CHANGE, SEND_FREQUENCY);
-		rp_add_sleep_time += SEND_FREQUENCY;
+		SEND_FREQUENCY = rp_sleepTime ;
+		int8_t ii = sleep(digitalPinToInterrupt(DOOR_SENSOR_PIN), CHANGE, digitalPinToInterrupt(PULSE_SENSOR), CHANGE, SEND_FREQUENCY);
+		if(ii==-1) {
+			rp_add_sleep_time += SEND_FREQUENCY;
+		} else {
+			rp_add_sleep_time += 10000;
+		}
 
 		rp_requreReinit = true;
 
-		checkDoor();
-		checkPulse();
 		wait(20);
 
 		//flow = 60.*1000.*(pulseCount - oldPulseCount)/SEND_FREQUENCY/PULSE_FACTOR;
@@ -230,16 +159,6 @@ void loop()
 	rp_loop_end();
 }
 
-void reportHwTemp() {
-	//(void)_sendRoute(build(_msg, GATEWAY_ADDRESS, RP_ID_TEMP, C_SET, V_TEMP).set(hwCPUTemperature()));
-	static int8_t lastTemp = 0;
-	int8_t temp = hwCPUTemperature();
-	if(temp!= lastTemp) {
-		myresend(build(_msg, GATEWAY_ADDRESS, RP_ID_TEMP, C_SET, V_TEMP).set(temp));
-		lastTemp = temp;
-	}
-}
-
 void receive(const MyMessage &message)
 {   
 	if (message.isAck()) {
@@ -247,20 +166,9 @@ void receive(const MyMessage &message)
 	}
 
 	rp_receive(message);
-
-	if (message.type==V_VAR3) {
-		pulseCount -= gwPulseCount;
-		gwPulseCount = 2*message.getULong();
-		pulseCount += gwPulseCount;
-		flow=oldflow=0;
-		rp_addToBuffer("Received from gw:");
-		rp_addToBuffer(gwPulseCount/2);
-		rp_reportBuffer();
-		pcReceived = true;
-	}
 }
 
-void onPulse()
+/*void onPulse()
 {
 	detachInterrupt(digitalPinToInterrupt(PULSE_SENSOR));
     if (!SLEEP_MODE) {
@@ -286,8 +194,8 @@ void onPulse()
     pulseCount++;
 	attachInterrupt(digitalPinToInterrupt(PULSE_SENSOR), onPulse, CHANGE);
 	//Serial.println( "count");
-}
-
+}*/
+/*
 void checkPulse() {
 	byte isClose = hwDigitalRead(PULSE_SENSOR);
 	if(pulseStatus != isClose) {
@@ -295,16 +203,8 @@ void checkPulse() {
 		pulseCount++;
 		//wasReport = true;
 	}
-}
+}*/
 
-void checkDoor() {
-	byte isOpen = hwDigitalRead(DOOR_SENSOR_PIN);
-	if(doorStatus != isOpen) {
-		doorStatus = isOpen;
-		myresend(doorMsg.set(doorStatus));
-		wasReport = true;
-	}
-}
 
 /*
 void onOpen()
@@ -323,3 +223,6 @@ void onOpen()
 	attachInterrupt(digitalPinToInterrupt(DOOR_SENSOR_PIN), onOpen, CHANGE);
 }
 */
+
+//ISR(WDT_vect){	
+//}
